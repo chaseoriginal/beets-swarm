@@ -12,9 +12,15 @@ services:
     environment:
       - TZ=${TZ}
     volumes:
-      - beets.config:/config
-      - /media/Multimedia/Music:/music
-      - /media/Multimedia/Incoming:/downloads
+      - type: bind
+        source: /var/lib/docker/volumes/beets-swarm_beets.config
+        target: /config
+      - type: bind
+        source: /media/Multimedia/Music
+        target: /music
+      - type: bind
+        source: /media/Multimedia/Incoming
+        target: /downloads
     ports:
       - target: 8337
         published: 8337
@@ -28,10 +34,6 @@ services:
           - node.labels.deployment.target.beets == true
       restart_policy:
         condition: on-failure
-
-volumes:
-  beets.config:
-    name: beets.config
 
 networks:
   beets-swarm_default:
