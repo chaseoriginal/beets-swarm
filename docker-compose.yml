@@ -12,15 +12,9 @@ services:
     environment:
       - TZ=${TZ}
     volumes:
-      - type: bind
-        source: /var/lib/docker/volumes/beets-swarm_beets.config
-        target: /config
-      - type: bind
-        source: /media/Multimedia/Music
-        target: /music
-      - type: bind
-        source: /media/Multimedia/Incoming
-        target: /downloads
+      - beets-swarm_beets.config:/config
+      - /media/Multimedia/Music:/music
+      - /media/Multimedia/Incoming:/downloads
     ports:
       - target: 8337
         published: 8337
