@@ -16,7 +16,7 @@ services:
     deploy:
       placement:
         constraints:
-        - node.labels.deployment.target.beets == true
+        - node.role==manager
       restart_policy:
         condition: on-failure
 volumes:
