@@ -1,35 +1,24 @@
-x-base: &base
-  restart: unless-stopped
-  networks:
-    - beets-swarm_default
-
 services:
   beets:
-    <<: *base
     image: lscr.io/linuxserver/beets:latest
-    container_name: ${CNAME}
-    user: ${PUID}:${PGID}
+    container_name: beets
     environment:
-      - TZ=${TZ}
+    - PUID=1000
+    - PGID=1000
+    - TZ=America/Chicago
     volumes:
-      - beets-swarm_beets.config:/config
-      - /media/Multimedia/Music:/music
-      - /media/Multimedia/Incoming:/downloads
+    - beets-swarm_config:/config
     ports:
-      - target: 8337
-        published: 8337
-        protocol: tcp
-        mode: host
+    - target: 8337
+      published: 8337
+      protocol: tcp
+      mode: host
     deploy:
-      mode: replicated
-      replicas: 1
       placement:
         constraints:
-          - node.labels.deployment.target.beets == true
+        - node.role==manager
       restart_policy:
         condition: on-failure
-
-networks:
-  beets-swarm_default:
-    external: true
-    name: beets-swarm_default
+volumes:
+  beets-swarm_config:
+    name: beets-swarm_config
