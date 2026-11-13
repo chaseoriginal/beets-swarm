@@ -1,0 +1,24 @@
+# Bulk analysis config for the beets-swarm library job.
+#
+# Purpose: run the audio analysis (MusicBrainz matching + chroma acoustic
+# fingerprinting + ReplayGain loudness) across the existing music library
+# WITHOUT the side effects of the full plugin set.
+#
+# The main /config/config.yaml enables:
+#   scrub      - rewrites tags in place (strips non-standard fields)
+#   embedart   - fetches and embeds cover art into every file
+#   fetchart   - hits the network for art on every album
+#   lastgenre  - rewrites the GENRE tag on every track
+#   convert    - would transcode (auto: no, but why risk it)
+#
+# For an analysis pass we only want:
+#   musicbrainz - the metadata source, needed for chroma to work at all
+#   chroma       - AcoustID acoustic fingerprinting
+#   replaygain   - loudness measurement, writes REPLAYGAIN_* tags
+#
+# include: merges the main config (paths, library, import mode, auth) and the
+# plugins key below overrides the plugin set from the included file.
+
+include: /config/config.yaml
+
+plugins: musicbrainz chroma replaygain
