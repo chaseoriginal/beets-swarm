@@ -8,6 +8,8 @@ services:
     - TZ=America/Chicago
     volumes:
     - beets-swarm_config:/config
+    - /media/Multimedia/Music:/music
+    - /media/Multimedia/Incoming:/downloads
     ports:
     - target: 8337
       published: 8337
@@ -18,7 +20,7 @@ services:
         constraints:
         - node.role==manager
       restart_policy:
-        condition: on-failure
+        condition: any
 volumes:
   beets-swarm_config:
     name: beets-swarm_config
