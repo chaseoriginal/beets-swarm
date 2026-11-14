@@ -18,10 +18,16 @@
 #    that side effect never happens and the file is left bare.
 #    Proven: import with the restricted plugin set -> 0 tags on disk;
 #    the same import with the full config -> 6 tags on disk.
-#    The fix is a second pass over the library:
-#        beet replaygain -a -w -f
-#    which writes the stored gains into the files. -f forces re-analysis
-#    of albums that already have gains.
+#    The fix is a second pass that writes the stored values out to the
+#    files:
+#        beet write -f "id:<first>..<last>"
+#    which flushes the DB-held tags (including the ReplayGain gains and
+#    the chroma fingerprint) into the FLAC in a couple of seconds.
+#    Do NOT use `beet replaygain -a -w -f` here: it re-analyses every
+#    track with ffmpeg instead of writing what is already computed.
+#    Scope it by ITEM ID RANGE, not by path: the beets `path:` field
+#    query matches nothing in beets 2.14, and it is a regex, so a
+#    directory named "Gravity (2012)" would break it anyway.
 #
 # 2. ENUMERATE THE DIRECTORIES THAT ACTUALLY HOLD AUDIO, NOT A FIXED
 #    DEPTH. The music share is Category/Artist/Album, so depth-2 gives
@@ -49,8 +55,12 @@ set -u
 
 CFG_VOL=/var/lib/docker/volumes/beets-swarm_config/_data
 LOG="$CFG_VOL/bulk-analysis.log"
-DONE="$CFG_VOL/bulk-analysis.done"
-FAILED="$CFG_VOL/bulk-analysis.failed"
+# The ledger records albums that are BOTH imported and written to disk.
+# The .v2 name is deliberate: the pre-v2 ledger recorded albums that were
+# imported but never written to disk (the write pass did not work then),
+# so those albums must be re-processed. The old file is kept as history.
+DONE="$CFG_VOL/bulk-analysis.done.v2"
+FAILED="$CFG_VOL/bulk-analysis.failed.v2"
 HOST_ROOT=/media/Multimedia/Music
 CONT_ROOT=/music
 WORK=/var/tmp/beets-bulk
@@ -99,13 +109,42 @@ run_one() {
     return $rc
   fi
 
-  # Pass 2 - write the stored gains into the FILES. Without this the
+  # Pass 2 - write the stored tags into the FILES. Without this the
   # analysis exists only in the library database and never reaches the
   # music files that the streaming servers actually read.
+  #
+  # `beet write -f` is the right tool, NOT `beet replaygain -a -w -f`:
+  # write flushes the values already in the DB to the files in a couple of
+  # seconds, while replaygain -f re-analyses every track with ffmpeg.
+  #
+  # The query is an ITEM ID RANGE, not a path. The beets `path:` field
+  # query returns nothing in beets 2.14 (verified against a path that is
+  # definitely in the library), and it is a regex, so a directory named
+  # "Gravity (2012)" would break it anyway. The id range is exact and
+  # immune to any character in the directory name.
+  #
+  # The ids are read from the library database, which stores item paths
+  # RELATIVE to the library root (/music), so the relative form is used.
+  local rel="${cdir#$CONT_ROOT/}"
+  local idrange
+  idrange=$(docker exec "$c" python3 -c "
+import sqlite3, sys
+c = sqlite3.connect('/config/musiclibrary.blb')
+rel = sys.argv[1]
+ids = [r[0] for r in c.execute(
+    'select id from items where path like ?', ('%' + rel + '%',))]
+print(f'{min(ids)}..{max(ids)}' if ids else '')
+" "$rel" 2>/dev/null)
+  if [ -z "$idrange" ]; then
+    echo "$(date -Is) rc=1 noids $dir" >> "$FAILED"
+    echo "$(date -Is) rc=1 noids $dir" >> "$LOG"
+    return 1
+  fi
+
   docker exec "$c" sh -c \
     'cd /config && BEETSDIR=/config /lsiopy/bin/beet -c /config/bulk-analyze.yaml \
-       -l /config/musiclibrary.blb replaygain -a -w -f "$1"' _ "$cdir" \
-    >> "$WORK/last-rg.log" 2>&1
+       -l /config/musiclibrary.blb write -f "id:$1"' _ "$idrange" \
+    >> "$WORK/last-write.log" 2>&1
   rc=$?
   if [ $rc -eq 0 ]; then
     echo "$dir" >> "$DONE"
