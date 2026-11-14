@@ -85,10 +85,13 @@ LOG="$CFG_VOL/bulk-analysis.log"
 #   .v2 - imported and written, but the write scope bled into other
 #         albums and stripped their tags
 #   .v3 - fresh per-album DB, replaygain and fingerprint written by the
-#         beets commands, tags verified on disk
+#         beets commands - but the DB name was shared, so a concurrent
+#         process could poison it and the album's write steps would
+#         analyse the wrong album
+#   .v4 - fresh per-album DB with a UNIQUE name per invocation
 # Earlier ledger files are kept as history, never deleted.
-DONE="$CFG_VOL/bulk-analysis.done.v3"
-FAILED="$CFG_VOL/bulk-analysis.failed.v3"
+DONE="$CFG_VOL/bulk-analysis.done.v4"
+FAILED="$CFG_VOL/bulk-analysis.failed.v4"
 HOST_ROOT=/media/Multimedia/Music
 CONT_ROOT=/music
 WORK=/var/tmp/beets-bulk
@@ -129,7 +132,14 @@ run_one() {
   # be a container path: a host path like /var/tmp/beets-bulk/album.blb
   # does not exist in the container, and beets then prompts to create the
   # directory - which fails under a non-interactive stdin.
-  local db=/tmp/bulk-album.blb
+  #
+  # The name is unique per invocation ($$ is the shell PID). A shared
+  # fixed name means a second runner - or a diagnostic script - can
+  # collide with this one: the other process's album is already in the
+  # DB, so this album's import is refused with "This album is already
+  # in the library! Skipping.", the DB ends up holding the WRONG album,
+  # and the write steps silently analyse nothing.
+  local db="/tmp/bulk-album-$$.blb"
 
   # Step 1 - import: match, compute the gains, store them in the DB.
   # -I (noincremental) bypasses the global incremental state.
@@ -163,6 +173,9 @@ run_one() {
     'cd /config && BEETSDIR=/config /lsiopy/bin/beet \
        -c /config/bulk-analyze.yaml -l "$1" fingerprint' _ "$db" \
     >> "$WORK/last-fingerprint.log" 2>&1
+
+  # Clean up the per-album DB so the container's /tmp does not fill up.
+  docker exec "$c" rm -f "$db" 2>/dev/null
 
   echo "$dir" >> "$DONE"
   echo "$(date -Is) rc=0 ok $dir" >> "$LOG"
