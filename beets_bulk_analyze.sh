@@ -148,12 +148,22 @@ run_one() {
   # and the write steps silently analyse nothing.
   local db="/tmp/bulk-album-$$.blb"
 
-  # Step 1 - import: match, compute the gains, store them in the DB.
-  # -I (noincremental) bypasses the global incremental state.
+  # Step 1 - import: compute the gains into the DB.
+  #
+  # -A (--noautotag) imports the files' EXISTING metadata with no
+  # MusicBrainz query. That is a 14x speedup (3.1s vs 43s per album)
+  # and costs nothing here: the analysis config has import.write: no,
+  # so the matched metadata is never written to the files anyway. The
+  # search existed only to get chroma going, and the explicit
+  # fingerprint pass below does that without it.
+  #
+  # -I (noincremental) bypasses the global incremental state, which
+  # lives in a separate state file and would otherwise make beets skip
+  # every album it has seen.
   docker exec "$c" sh -c \
     'cd /config && rm -f "$1" && BEETSDIR=/config /lsiopy/bin/beet \
-       -c /config/bulk-analyze.yaml -l "$1" import -q -P -I \
-       --quiet-fallback=asis -C "$2"' _ "$db" "$cdir" \
+       -c /config/bulk-analyze.yaml -l "$1" import -q -A -I -C "$2"' \
+    _ "$db" "$cdir" \
     >> "$WORK/last-import.log" 2>&1
   rc=$?
   if [ $rc -ne 0 ]; then
