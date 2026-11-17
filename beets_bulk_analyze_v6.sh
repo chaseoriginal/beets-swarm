@@ -61,11 +61,21 @@ dexec() {
     opts="-i"
     shift
   fi
-  docker exec $opts "$C" "$@" 2>/dev/null || {
-    # the container moved - re-resolve and try once more
+  # The exec can fail with "OCI runtime exec failed" when the host is
+  # loaded - several shards execing at once against a container under
+  # I/O pressure over CIFS. Retry with a short backoff rather than
+  # recording a false failure.
+  local n
+  for n in 1 2 3 4 5; do
+    if docker exec $opts "$C" "$@" 2>/dev/null; then
+      return 0
+    fi
+    # the container may have been recreated - re-resolve it
     C=$(cname)
-    [ -n "$C" ] && docker exec $opts "$C" "$@"
-  }
+    [ -z "$C" ] && return 1
+    sleep $((n * 3))
+  done
+  return 1
 }
 
 # container path <-> host path
@@ -150,7 +160,16 @@ process_album() {
   good=$(echo "$v" | sed -n 's/.*ok=\([0-9]*\).*/\1/p')
   tot=${tot:-0}; good=${good:-0}
 
-  if [ "$tot" -gt 0 ] && [ "$good" -eq "$tot" ]; then
+  # A directory with no audio at all is not a failure - there was
+  # nothing to analyse. (Some library folders hold only artwork or
+  # text.) Only a directory that HAS files and did not get all of them
+  # tagged is a real partial.
+  if [ "$tot" -eq 0 ]; then
+    echo "$(date -Is) EMPTY (no audio) $dir" >> "$LOG"
+    return 0
+  fi
+
+  if [ "$good" -eq "$tot" ]; then
     echo "$dir" >> "$DONE"
     echo "$(date -Is) VERIFIED $good/$tot $dir" >> "$LOG"
     return 0
