@@ -51,10 +51,20 @@ cget() {
 }
 dexec() {
   cget || return 1
-  docker exec "$C" "$@" 2>/dev/null || {
+  # docker requires the OPTIONS before the container name:
+  #     docker exec -i CONTAINER COMMAND
+  # Passing them the other way round ("docker exec CONTAINER -i")
+  # makes the exec fail, which then consumed the heredoc on the
+  # retry and produced an empty verification.
+  local opts=""
+  if [ "${1:-}" = "-i" ]; then
+    opts="-i"
+    shift
+  fi
+  docker exec $opts "$C" "$@" 2>/dev/null || {
     # the container moved - re-resolve and try once more
     C=$(cname)
-    [ -n "$C" ] && docker exec "$C" "$@"
+    [ -n "$C" ] && docker exec $opts "$C" "$@"
   }
 }
 
