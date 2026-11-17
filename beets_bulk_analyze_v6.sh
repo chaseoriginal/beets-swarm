@@ -32,6 +32,32 @@ touch "$FAILED" "$DONE"
 
 cname() { docker ps --filter name=beets-swarm --format '{{.Names}}' | head -1; }
 
+# Run a command in the beets container, resolving the container NAME at
+# the moment of use and retrying once if the container was recreated
+# underneath us.
+#
+# The container ID changes every time the swarm recreates the task, so
+# resolving it once at the start of the script is not enough - every
+# exec then hits a stale ID and silently fails. That is what filled
+# the log with PARTIAL entries: the runner was talking to a container
+# that no longer existed.
+C=""
+cget() {
+  if [ -z "$C" ] || ! docker inspect "$C" >/dev/null 2>&1; then
+    C=$(cname)
+  fi
+  [ -n "$C" ] || return 1
+  return 0
+}
+dexec() {
+  cget || return 1
+  docker exec "$C" "$@" 2>/dev/null || {
+    # the container moved - re-resolve and try once more
+    C=$(cname)
+    [ -n "$C" ] && docker exec "$C" "$@"
+  }
+}
+
 # container path <-> host path
 #   host:   /media/Multimedia/Music/General Music/...
 #   container: /music/General Music/...
@@ -45,7 +71,7 @@ verify_album() {
   # carry at least 4 analysis atoms.
   # NOTE: docker exec needs -i to forward the heredoc on stdin. Without
   # it python reads nothing and prints nothing.
-  docker exec -i "$c" python3 - "$1" <<'PYEOF'
+  dexec -i python3 - "$1" <<'PYEOF'
 import os, sys, subprocess
 d = sys.argv[1]
 A = ('.flac', '.mp3', '.m4a', '.ogg', '.aac', '.opus', '.wma')
@@ -76,11 +102,12 @@ PYEOF
 
 process_album() {
   dir="$1"                 # host path
+  cget || { echo "$(date -Is) NO CONTAINER $dir" >> "$FAILED"; return 1; }
   cdir=$(host2cont "$dir")
   db="/tmp/bulk-v6-$SHARD-$$.blb"
 
   # 1. import
-  docker exec "$c" sh -c \
+  dexec sh -c \
     'cd /config && rm -f "$1" && BEETSDIR=/config /lsiopy/bin/beet \
        -c /config/bulk-analyze.yaml -l "$1" import -q -A -I -C "$2"' \
     _ "$db" "$cdir" >> "$WORK/last-import-v6.log" 2>&1
@@ -91,19 +118,19 @@ process_album() {
   fi
 
   # 2. replaygain
-  docker exec "$c" sh -c \
+  dexec sh -c \
     'cd /config && BEETSDIR=/config /lsiopy/bin/beet \
        -c /config/bulk-analyze.yaml -l "$1" replaygain -a' \
     _ "$db" >> "$WORK/last-rg-v6.log" 2>&1
 
   # 3. fingerprint
-  docker exec "$c" sh -c \
+  dexec sh -c \
     'cd /config && BEETSDIR=/config /lsiopy/bin/beet \
        -c /config/bulk-analyze.yaml -l "$1" fingerprint' \
     _ "$db" >> "$WORK/last-fp-v6.log" 2>&1
 
   # 4. the metadata-free write
-  out=$(docker exec "$c" python3 /config/write_analysis_only.py "$db" "$cdir" 2>&1)
+  out=$(dexec python3 /config/write_analysis_only.py "$db" "$cdir" 2>&1)
   echo "$out" >> "$WORK/last-write-v6.log"
 
   # 5. VERIFY THE FILES. This is what v5 did not do.
@@ -124,8 +151,7 @@ process_album() {
   return 1
 }
 
-c=$(cname)
-[ -z "$c" ] && { echo "no beets container"; exit 1; }
+cget || { echo "no beets container"; exit 1; }
 
 n=0
 while IFS= read -r dir; do
