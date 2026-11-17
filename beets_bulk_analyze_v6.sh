@@ -97,6 +97,7 @@ d = sys.argv[1]
 A = ('.flac', '.mp3', '.m4a', '.ogg', '.aac', '.opus', '.wma')
 total = ok = 0
 bad = []
+damaged = []
 for dirpath, _s, fs in os.walk(d):
     for f in fs:
         if not f.lower().endswith(A):
@@ -114,9 +115,25 @@ for dirpath, _s, fs in os.walk(d):
                  if 'replaygain' in l.lower() or 'acoustid' in l.lower()])
         if n >= 4:
             ok += 1
-        elif len(bad) < 3:
+            continue
+        if len(bad) < 3:
             bad.append(os.path.basename(p))
-print('VERIFY total=%d ok=%d bad=%s' % (total, ok, bad))
+        # a file ffmpeg cannot DECODE can never carry a full set. That
+        # is a file problem, not an analysis problem, and it must not
+        # hold up the album - it is reported separately.
+        try:
+            r = subprocess.run(
+                ['ffmpeg', '-v', 'error', '-i', p, '-f', 'null', '-'],
+                capture_output=True, text=True, timeout=240)
+            err = r.stderr or ''
+            if ('Invalid data' in err or 'Error while decoding' in err
+                    or 'Invalid packet' in err):
+                damaged.append(os.path.basename(p))
+        except Exception:
+            pass
+print('VERIFY total=%d ok=%d bad=%s damaged=%d' % (total, ok, bad, len(damaged)))
+for x in damaged[:5]:
+    print('   DAMAGED %s' % x)
 PYEOF
 }
 
@@ -137,10 +154,32 @@ process_album() {
     return $rc
   fi
 
-  # 2. replaygain
+  # 2. THE GAIN PASSES.
+  #    A file ffmpeg cannot decode makes ffmpeg exit non-zero, and
+  #    beets raises on that - so ONE damaged file killed the album
+  #    gain for every track beside it. Three passes fix it:
+  #      a. album gain PER FORMAT - a damaged file of one format
+  #         cannot poison another format's album gain
+  #      b. the whole album - the common single-format case
+  #      c. FORCED per-track gain - each item analysed on its own, so
+  #         a damaged file only affects itself. It also fills in
+  #         files that already carried partial gain data, which beets
+  #         skips without -f.
+  for f in $(dexec sh -c "ls -1 '$cdir' 2>/dev/null | sed 's/.*\.//' | tr 'A-Z' 'a-z' | sort -u | grep -E '^(flac|mp3|m4a|mp4|ogg|opus|wma|aac)$'"); do
+    FMT=$(echo "$f" | tr 'a-z' 'A-Z')
+    dexec sh -c \
+      'cd /config && BEETSDIR=/config /lsiopy/bin/beet \
+         -c /config/bulk-analyze.yaml -l "$1" replaygain -a -f \
+         "format:$2"' \
+      _ "$db" "$FMT" >> "$WORK/last-rg-v6.log" 2>&1
+  done
   dexec sh -c \
     'cd /config && BEETSDIR=/config /lsiopy/bin/beet \
-       -c /config/bulk-analyze.yaml -l "$1" replaygain -a' \
+       -c /config/bulk-analyze.yaml -l "$1" replaygain -a -f' \
+    _ "$db" >> "$WORK/last-rg-v6.log" 2>&1
+  dexec sh -c \
+    'cd /config && BEETSDIR=/config /lsiopy/bin/beet \
+       -c /config/bulk-analyze.yaml -l "$1" replaygain -f' \
     _ "$db" >> "$WORK/last-rg-v6.log" 2>&1
 
   # 3. fingerprint
@@ -158,7 +197,15 @@ process_album() {
   echo "$v" | sed "s|^|$(date -Is) |" >> "$WORK/last-verify-v6.log"
   tot=$(echo "$v" | sed -n 's/.*total=\([0-9]*\).*/\1/p')
   good=$(echo "$v" | sed -n 's/.*ok=\([0-9]*\).*/\1/p')
-  tot=${tot:-0}; good=${good:-0}
+  dmg=$(echo "$v" | sed -n 's/.*damaged=\([0-9]*\).*/\1/p')
+  tot=${tot:-0}; good=${good:-0}; dmg=${dmg:-0}
+
+  # A file that ffmpeg cannot DECODE can never carry a complete set
+  # of analysis fields. It is a FILE problem, not an analysis
+  # problem, so it does not hold up the album - but it is recorded.
+  if [ "$dmg" -gt 0 ]; then
+    echo "$(date -Is) DAMAGED $dmg file(s) in $dir" >> "$LOG"
+  fi
 
   # A directory with no audio at all is not a failure - there was
   # nothing to analyse. (Some library folders hold only artwork or
@@ -174,6 +221,17 @@ process_album() {
     echo "$(date -Is) VERIFIED $good/$tot $dir" >> "$LOG"
     return 0
   fi
+
+  # The shortfall is exactly the number of files ffmpeg cannot decode.
+  # Those are FILE problems, not analysis problems - they are recorded
+  # separately and must not keep the album in the retry queue forever.
+  short=$((tot - good))
+  if [ "$dmg" -ge "$short" ] && [ "$short" -gt 0 ]; then
+    echo "$dir" >> "$DONE"
+    echo "$(date -Is) VERIFIED $good/$tot (dmg=$dmg, undecodable) $dir" >> "$LOG"
+    return 0
+  fi
+
   # not all files landed - requeue it, do not claim success
   echo "$(date -Is) PARTIAL $good/$tot $dir" >> "$FAILED"
   echo "$(date -Is) PARTIAL $good/$tot $dir" >> "$LOG"
