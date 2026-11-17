@@ -33,7 +33,11 @@ touch "$FAILED" "$DONE"
 cname() { docker ps --filter name=beets-swarm --format '{{.Names}}' | head -1; }
 
 # container path <-> host path
-host2cont() { echo "${1#/media/Multimedia/Music}"; }
+#   host:   /media/Multimedia/Music/General Music/...
+#   container: /music/General Music/...
+# The container path MUST keep the /music prefix - dropping it gives
+# "no such file or directory: /General Music/...".
+host2cont() { echo "/music${1#/media/Multimedia/Music}"; }
 cont2host() { echo "/media/Multimedia/Music${1#/music}"; }
 
 verify_album() {
