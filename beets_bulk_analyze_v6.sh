@@ -43,7 +43,9 @@ cont2host() { echo "/media/Multimedia/Music${1#/music}"; }
 verify_album() {
   # $1 = container dir. Reads every audio file back and counts how many
   # carry at least 4 analysis atoms.
-  docker exec "$c" python3 - "$1" <<'PYEOF'
+  # NOTE: docker exec needs -i to forward the heredoc on stdin. Without
+  # it python reads nothing and prints nothing.
+  docker exec -i "$c" python3 - "$1" <<'PYEOF'
 import os, sys, subprocess
 d = sys.argv[1]
 A = ('.flac', '.mp3', '.m4a', '.ogg', '.aac', '.opus', '.wma')
@@ -129,7 +131,8 @@ n=0
 while IFS= read -r dir; do
   [ -z "$dir" ] && continue
   if grep -Fxq "$dir" "$DONE" 2>/dev/null; then continue; fi
-  # only take this shard's share
+  # a directory that already FAILED in a previous run is retried, but
+  # not in a tight loop - the failed ledger is checked by the caller.
   idx=$((n % NSHARD))
   n=$((n+1))
   [ "$idx" -ne "$SHARD" ] && continue
