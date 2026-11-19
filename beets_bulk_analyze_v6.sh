@@ -165,7 +165,16 @@ process_album() {
   #         a damaged file only affects itself. It also fills in
   #         files that already carried partial gain data, which beets
   #         skips without -f.
-  for f in $(dexec sh -c "ls -1 '$cdir' 2>/dev/null | sed 's/.*\.//' | tr 'A-Z' 'a-z' | sort -u | grep -E '^(flac|mp3|m4a|mp4|ogg|opus|wma|aac)$'"); do
+  # The formats present in this directory
+  fmts=$(dexec sh -c "ls -1 '$cdir' 2>/dev/null | sed 's/.*\.//' | tr 'A-Z' 'a-z' | sort -u | grep -E '^(flac|mp3|m4a|mp4|ogg|opus|wma|aac)$'")
+  nfmt=$(echo "$fmts" | grep -c . )
+
+  # a. album gain PER FORMAT - a damaged file of one format cannot
+  #    poison another format's album gain.
+  #    For a SINGLE-format album this IS the whole-album pass, so the
+  #    separate whole-album pass would be a duplicate - and every
+  #    pass decodes every file again, so a duplicate is expensive.
+  for f in $fmts; do
     FMT=$(echo "$f" | tr 'a-z' 'A-Z')
     dexec sh -c \
       'cd /config && BEETSDIR=/config /lsiopy/bin/beet \
@@ -173,14 +182,43 @@ process_album() {
          "format:$2"' \
       _ "$db" "$FMT" >> "$WORK/last-rg-v6.log" 2>&1
   done
-  dexec sh -c \
-    'cd /config && BEETSDIR=/config /lsiopy/bin/beet \
-       -c /config/bulk-analyze.yaml -l "$1" replaygain -a -f' \
-    _ "$db" >> "$WORK/last-rg-v6.log" 2>&1
-  dexec sh -c \
-    'cd /config && BEETSDIR=/config /lsiopy/bin/beet \
-       -c /config/bulk-analyze.yaml -l "$1" replaygain -f' \
-    _ "$db" >> "$WORK/last-rg-v6.log" 2>&1
+
+  # b. the whole album, only when there is more than one format (the
+  #    single-format case is already covered above)
+  if [ "$nfmt" -gt 1 ]; then
+    dexec sh -c \
+      'cd /config && BEETSDIR=/config /lsiopy/bin/beet \
+         -c /config/bulk-analyze.yaml -l "$1" replaygain -a -f' \
+      _ "$db" >> "$WORK/last-rg-v6.log" 2>&1
+  fi
+
+  # c. FORCED per-track gain - each item analysed on its own, so a
+  #    damaged file only affects itself. It also fills in files that
+  #    already carried partial gain data, which beets skips without
+  #    -f.
+  #    It is SKIPPED when the album pass already gave every item a
+  #    track gain, because it decodes every file a second time and
+  #    that is the most expensive step in the pass.
+  miss=$(dexec python3 -c "
+import sqlite3, sys
+try:
+    con = sqlite3.connect(sys.argv[1])
+    n = con.execute('select count(*) from items').fetchone()[0]
+    g = con.execute('select count(*) from items where rg_track_gain '
+                    'is not null').fetchone()[0]
+    print(n - g)
+except Exception:
+    print(-1)
+" "$db" 2>/dev/null)
+  if [ -z "$miss" ]; then
+    miss=-1
+  fi
+  if [ "$miss" != "0" ]; then
+    dexec sh -c \
+      'cd /config && BEETSDIR=/config /lsiopy/bin/beet \
+         -c /config/bulk-analyze.yaml -l "$1" replaygain -f' \
+      _ "$db" >> "$WORK/last-rg-v6.log" 2>&1
+  fi
 
   # 3. fingerprint
   dexec sh -c \
